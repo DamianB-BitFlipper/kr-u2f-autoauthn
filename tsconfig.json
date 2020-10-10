@@ -8,5 +8,5 @@
         "skipLibCheck": true,
         "experimentalDecorators": true,
         "typeRoots": ["node_modules/@types", "node_modules/web-ext-types"]
-    }
+    },
 }

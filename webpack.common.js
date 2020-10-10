@@ -67,4 +67,9 @@ module.exports = {
       jQuery: "jquery"
     }),
   ],
+  // target: "node",
+  // externals:{
+  //     fs:    "commonjs fs",
+  //     net:   "commonjs net",
+  // },
 }

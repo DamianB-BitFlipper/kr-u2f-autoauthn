@@ -11,6 +11,7 @@ import * as protocol from './protocol';
 import { addPresenceAndCounter, client, makeRegisterData } from './u2f';
 import {getDomainFromOrigin, getOriginFromUrl} from './url';
 import {createAuthenticatorDataWithAttestation, createAuthenticatorDataWithoutAttestation} from './webauthn';
+import {get, set} from './storage';
 
 async function onRequest(msg, sender) {
     if (msg.type) {
@@ -167,18 +168,41 @@ async function handle_webauthn_register(msg: any,
 
     const challenge = await crypto_hash_sha256(clientData);
 
-    const response = await c.enrollU2f({
-        app_id: rpId,
-        challenge,
-    });
-    if (!response.u2f_register_response) {
-        throw new Error('no u2f_register_response');
-    }
-    if (response.u2f_register_response.error) {
-        throw response.u2f_register_response.error;
-    }
+    // ADDED
+    // const response = await c.enrollU2f({
+    //     app_id: rpId,
+    //     challenge,
+    // });
+    // if (!response.u2f_register_response) {
+    //     throw new Error('no u2f_register_response');
+    // }
+    // if (response.u2f_register_response.error) {
+    //     throw response.u2f_register_response.error;
+    // }
+    //
+    // const u2fRegisterResponse = response.u2f_register_response;
 
-    const u2fRegisterResponse = response.u2f_register_response;
+    // Extract the x/y-coords of this elliptic curve public key
+    const public_key_json = await get('my_pubkey');
+    const public_key_encoded = JSON.parse(public_key_json);
+    const pk_x = await from_base64_url_nopad(public_key_encoded.x)
+    const pk_y = await from_base64_url_nopad(public_key_encoded.y)
+
+    const privk = await get('my_privkey');
+    console.warn();
+    console.warn(privk);
+
+    // const public_key = await window.crypto.subtle.exportKey('raw', await get('my_pubkey'));
+    // console.warn(new Uint8Array(public_key));
+
+    const u2fRegisterResponse: protocol.U2FRegisterResponse = {
+        public_key: new Uint8Array([...pk_x, ...pk_y]),
+        counter: 420,
+        signature: new Uint8Array([0x69, 0x69, 0x69, 0x69, 0x69, 0x69, 0x69, 0x69]),
+        attestation_certificate: new Uint8Array([0x69, 0x69, 0x69, 0x69, 0x69, 0x69, 0x69, 0x69]),
+        key_handle: new Uint8Array([0x69, 0x69, 0x69, 0x69, 0x69, 0x69, 0x69, 0x69]),
+        error: "What error?",
+    };
 
     const authenticatorData = await createAuthenticatorDataWithAttestation(rpId,
                                                                            u2fRegisterResponse.counter,
@@ -593,6 +617,32 @@ switch (detectBrowser()) {
 
 client.then((c) => { c.onChange = sendStates.bind(null, c); });
 
+declare var Components;
+
+// Create the local public-private keys
+async function initPubPrivKeys() {
+    console.info("Creating ECDSA public/private keys");
+
+    const keyPair = await window.crypto.subtle.generateKey(
+        {
+            name: "ECDSA",
+            namedCurve: "P-256"
+        },
+        true,
+        ["sign", "verify"],
+    );
+
+    // Store the public/private keys
+    const public_key = await window.crypto.subtle.exportKey('jwk', keyPair.publicKey);
+    const public_key_json = JSON.stringify(public_key);
+
+    const private_key = await window.crypto.subtle.exportKey('jwk', keyPair.privateKey);
+    const private_key_json = JSON.stringify(private_key);
+
+    await set('my_pubkey', public_key_json);
+    await set('my_privkey', private_key_json);
+}
+
 switch (detectBrowser()) {
     case Browser.safari:
         //  https://stackoverflow.com/questions/9868985/safari-extension-first-run-and-updates
@@ -611,6 +661,9 @@ switch (detectBrowser()) {
     default:
         chrome.runtime.onInstalled.addListener(function(details) {
             if (details.reason === 'install') {
+                // On install, initialize the public/private keys
+                initPubPrivKeys();
+
                 chrome.tabs.create({ url: '/popup.html' });
             } else if (details.reason === 'update') {
                 const thisVersion = chrome.runtime.getManifest().version;

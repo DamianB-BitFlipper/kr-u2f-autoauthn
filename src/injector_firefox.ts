@@ -280,3 +280,4 @@ export function injectU2fInterface() {
         console.error('wrap failed with error: ' + e);
     }
 }
+
