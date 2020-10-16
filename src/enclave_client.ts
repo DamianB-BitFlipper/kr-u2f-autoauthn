@@ -1,4 +1,4 @@
-import { crypto_hash_sha256, equals } from './crypto';
+import { crypto_hash_sha256, randombytes_buf, equals } from './crypto';
 import { appIdToShortName } from './known_app_ids';
 import { parse } from './krjson';
 import { stringify } from './krjson';
@@ -12,6 +12,7 @@ import {
             U2FRegisterRequest,
             UnpairRequest,
         } from './protocol';
+import {get} from './storage';
 
 export default class EnclaveClient {
     public pairing: Pairing;
@@ -120,6 +121,34 @@ export default class EnclaveClient {
     // S = appId or rpId
     // D = device_identifier
     // H = SHA-256
+    public async create_key_handle(serviceId: string): Promise<Uint8Array> {
+        // Generate the random bytes
+        const random_bytes = await randombytes_buf(32);
+        const hashed_random_bytes = await crypto_hash_sha256(random_bytes);
+
+        // Generate other hashed elements
+        const hashed_serviceId = await crypto_hash_sha256(serviceId);
+        const hashed_device_identifier = await crypto_hash_sha256(await get('my_pubkey'));
+
+        // Construct the array for the outer hash
+        const innerHash = new Uint8Array(32 * 3);
+        innerHash.set(hashed_device_identifier, 0);
+        innerHash.set(hashed_serviceId, 32);
+        innerHash.set(hashed_random_bytes, 64);
+
+        const outerHash = await crypto_hash_sha256(innerHash);
+
+        return new Uint8Array([...KRYPTON_U2F_MAGIC, ...random_bytes, ...outerHash]);
+    }
+
+    // KeyHandle: 80 bytes
+    // M + R + H(H(D) + H(S) + H(R))
+    // where
+    // M = [16 Magic Bytes]
+    // R = [32 bytes of random]
+    // S = appId or rpId
+    // D = device_identifier
+    // H = SHA-256
     public async mapKeyHandleToMatchingAppId(keyHandle: Uint8Array, service: { appId?: string, rpId?: string}):
         Promise<string | null> {
         if (!await equals(
@@ -129,7 +158,12 @@ export default class EnclaveClient {
             console.error('wrong magic');
             return null;
         }
-        if (!this.pairing.enclaveDeviceIdentifier) {
+        // TODO: Make this.pairing recognize that itself is a Pairing.
+        // ADDED: Use a different way of getting the device identifier for now
+        const device_identifier = await get('my_pubkey');
+
+        // if (!this.pairing.enclaveDeviceIdentifier) {
+        if (!device_identifier) {
             console.error('not paired');
             return null;
         }
@@ -142,7 +176,8 @@ export default class EnclaveClient {
 
         //  check whether appId or rpId matches
         const innerHash = new Uint8Array(32 * 3);
-        innerHash.set(await crypto_hash_sha256(this.pairing.enclaveDeviceIdentifier), 0);
+        //innerHash.set(await crypto_hash_sha256(this.pairing.enclaveDeviceIdentifier), 0);
+        innerHash.set(await crypto_hash_sha256(device_identifier), 0);
         innerHash.set(await crypto_hash_sha256(random), 64);
 
         async function tryAppId(appId?: string): Promise<boolean> {

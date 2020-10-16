@@ -1,7 +1,7 @@
 import * as CBOR from 'cbor';
 
 import { Browser, browser as detectBrowser } from './browser';
-import {crypto_hash_sha256, from_base64_url_nopad, to_base64_url_nopad} from './crypto';
+import {crypto_hash_sha256, from_base64_url_nopad, to_base64_url_nopad, signature_to_ASN1} from './crypto';
 import EnclaveClient from './enclave_client';
 import {RequestTypes, ResponseTypes} from './enums';
 import { parse, stringify, webauthnParse, webauthnStringify } from './krjson';
@@ -182,27 +182,33 @@ async function handle_webauthn_register(msg: any,
     //
     // const u2fRegisterResponse = response.u2f_register_response;
 
+
+
+    // TODO: Move this to an enrollU2f-like function
+
     // Extract the x/y-coords of this elliptic curve public key
     const public_key_json = await get('my_pubkey');
     const public_key_encoded = JSON.parse(public_key_json);
-    const pk_x = await from_base64_url_nopad(public_key_encoded.x)
-    const pk_y = await from_base64_url_nopad(public_key_encoded.y)
+    const pk_x = await from_base64_url_nopad(public_key_encoded.x);
+    const pk_y = await from_base64_url_nopad(public_key_encoded.y);
 
-    const privk = await get('my_privkey');
-    console.warn();
-    console.warn(privk);
+    // ADDED
+    // console.warn("pk_x: " + pk_x + " pk_y: " + pk_y);
 
-    // const public_key = await window.crypto.subtle.exportKey('raw', await get('my_pubkey'));
-    // console.warn(new Uint8Array(public_key));
+    // Create a valid `key_handle`
+    const key_handle = await c.create_key_handle(rpId);
 
     const u2fRegisterResponse: protocol.U2FRegisterResponse = {
         public_key: new Uint8Array([...pk_x, ...pk_y]),
         counter: 420,
-        signature: new Uint8Array([0x69, 0x69, 0x69, 0x69, 0x69, 0x69, 0x69, 0x69]),
-        attestation_certificate: new Uint8Array([0x69, 0x69, 0x69, 0x69, 0x69, 0x69, 0x69, 0x69]),
-        key_handle: new Uint8Array([0x69, 0x69, 0x69, 0x69, 0x69, 0x69, 0x69, 0x69]),
-        error: "What error?",
+        signature: new Uint8Array([]), // Omit
+        attestation_certificate: new Uint8Array([]), // Omit
+        key_handle: key_handle,
+        error: '',
     };
+
+    // TODO: Move this to an enrollU2f-like function
+
 
     const authenticatorData = await createAuthenticatorDataWithAttestation(rpId,
                                                                            u2fRegisterResponse.counter,
@@ -369,21 +375,75 @@ async function handle_webauthn_sign(msg: any, sender: chrome.runtime.MessageSend
 
     const challenge = await crypto_hash_sha256(clientData);
 
-    const response: protocol.Response = await c.signU2f({
-        app_id: matchingAppId,
-        challenge,
-        key_handle: keyHandle,
-    });
-    if (!response.u2f_authenticate_response) {
-        throw new Error('no u2f_authenticate_response');
-    }
-    if (response.u2f_authenticate_response.error) {
-        throw response.u2f_authenticate_response.error;
-    }
+    // const response: protocol.Response = await c.signU2f({
+    //     app_id: matchingAppId,
+    //     challenge,
+    //     key_handle: keyHandle,
+    // });
+    // if (!response.u2f_authenticate_response) {
+    //     throw new Error('no u2f_authenticate_response');
+    // }
+    // if (response.u2f_authenticate_response.error) {
+    //     throw response.u2f_authenticate_response.error;
+    // }
 
-    const u2fSignResponse = response.u2f_authenticate_response;
+    // const u2fSignResponse = response.u2f_authenticate_response;
+
+    // Extract the x/y-coords of this elliptic curve public key
+    const public_key_json = await get('my_pubkey');
+    const public_key_encoded = JSON.parse(public_key_json);
+    const pk_x = await from_base64_url_nopad(public_key_encoded.x);
+    const pk_y = await from_base64_url_nopad(public_key_encoded.y);
+
+    const u2fSignResponse: protocol.U2FAuthenticateResponse = {
+        counter: 420,
+        signature: null, // To be filled in later
+        public_key: new Uint8Array([...pk_x, ...pk_y]),
+        error: '',
+    };
+
+    // ADDED
+    //console.warn("pk_x: " + pk_x + " pk_y: " + pk_y);
 
     const authenticatorData = await createAuthenticatorDataWithoutAttestation(matchingAppId, u2fSignResponse.counter);
+
+    const to_sign_data = new Uint8Array(authenticatorData.byteLength + 32);
+    to_sign_data.set(authenticatorData, 0);
+    to_sign_data.set(challenge, authenticatorData.byteLength);
+
+    // ADDED
+    // console.warn("TO SIGN DATA: " + to_sign_data);
+
+    // Extract the private key as a `CryptoKey` object
+    const private_key_json = await get('my_privkey');
+    const private_key_encoded = JSON.parse(private_key_json);
+
+    // ADDED
+    //console.warn("Private key: " + await from_base64_url_nopad(private_key_encoded.d));
+
+    const private_key = await window.crypto.subtle.importKey(
+        'jwk', 
+        private_key_encoded, 
+        {
+            name: "ECDSA",
+            namedCurve: "P-256",
+        },
+        false,
+        ["sign"],
+    );
+    
+    // Perform the authentication signing
+    const signature = await window.crypto.subtle.sign(
+        {
+            name: "ECDSA",
+            hash: {name: "SHA-256"},
+        },
+        private_key,
+        to_sign_data.buffer,
+    )
+
+    // ADDED
+    // console.warn("SIGNATURE: " + await signature_to_ASN1(new Uint8Array(signature)));
 
     const credential: PublicKeyCredential = {
         id: await to_base64_url_nopad(keyHandle),
@@ -391,7 +451,7 @@ async function handle_webauthn_sign(msg: any, sender: chrome.runtime.MessageSend
         response: {
             authenticatorData: authenticatorData.buffer,
             clientDataJSON: (await from_base64_url_nopad(clientDataB64)).buffer,
-            signature: u2fSignResponse.signature.buffer,
+            signature: (await signature_to_ASN1(new Uint8Array(signature))).buffer,
             userHandle: new ArrayBuffer(0),
         },
         type: 'public-key',
@@ -626,7 +686,7 @@ async function initPubPrivKeys() {
     const keyPair = await window.crypto.subtle.generateKey(
         {
             name: "ECDSA",
-            namedCurve: "P-256"
+            namedCurve: "P-256",
         },
         true,
         ["sign", "verify"],

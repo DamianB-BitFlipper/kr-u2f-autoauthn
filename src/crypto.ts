@@ -88,3 +88,40 @@ export async function crypto_box_easy(
     await sodium.ready;
     return sodium.crypto_box_easy(message, nonce, publicKey, privateKey, outputFormat);
 }
+
+export async function signature_to_ASN1(signature: Uint8Array): Promise<Uint8Array> {
+    // TODO: Could be made more efficient by avoiding all of the copies
+
+    // From: https://stackoverflow.com/questions/39554165/ecdsa-signatures-between-node-js-and-webcrypto-appear-to-be-incompatible
+    // Modified to work directly in `Uint8Array`
+    let r = signature.slice(0, 32);
+    let s = signature.slice(32);
+    let rPre = true;
+    let sPre = true;
+
+    // ADDED
+    // console.warn("R: " + r + " S: " + s);
+
+    while(r[0] === 0x00) {
+        r = r.slice(2);
+        rPre = false;
+    }    
+
+    if (rPre && r[0] > 127) {
+        r = new Uint8Array([0, ...r]);
+    }
+
+    while(s[0] === 0x00) {
+        s = s.slice(2);
+        sPre = false;
+    }
+
+    if(sPre && s[0] > 127) {
+        s = new Uint8Array([0, ...s]);
+    }
+
+    const payload = new Uint8Array([0x02, r.byteLength, ...r, 0x02, s.byteLength, ...s]);
+    const der = new Uint8Array([0x30, payload.byteLength, ...payload]);
+
+    return der;
+}
