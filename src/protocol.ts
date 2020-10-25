@@ -107,3 +107,11 @@ export class Me {
 
 export class UnpairResponse {}
 export class AckResponse {}
+
+export class WebauthnClientData {
+    public challenge: string;
+    public clientExtensions: { [key:string]:any; };
+    public hashAlgorithm: string;
+    public origin: string | null;
+    public type: string;
+}

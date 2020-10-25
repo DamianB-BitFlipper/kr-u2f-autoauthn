@@ -157,16 +157,18 @@ async function handle_webauthn_register(msg: any,
         }
     }
 
-    const clientData = JSON.stringify({
+    const clientData: protocol.WebauthnClientData = {
         challenge: await to_base64_url_nopad(new Uint8Array(pkOptions.challenge as any)),
         clientExtensions: {},
         hashAlgorithm: 'SHA-256',
-        origin,
+        origin: origin,
         type: 'webauthn.create',
-    });
-    const clientDataB64 = await to_base64_url_nopad(clientData);
+    };
+    const clientDataJSON = JSON.stringify(clientData);
+    const clientDataB64 = await to_base64_url_nopad(clientDataJSON);
 
-    const challenge = await crypto_hash_sha256(clientData);
+    // TODO: The 'challenge is not used anywhere'
+    const challenge = await crypto_hash_sha256(clientDataJSON);
 
     //
     // TODO: Move this to an enrollU2f-like function
@@ -310,8 +312,15 @@ async function handle_u2f_register(msg: any, sender: chrome.runtime.MessageSende
 }
 
 // TODO: Move function to more appropriate place, like enclave_client.ts
-async function authenticatorGetAssertion(rpId: string, challenge: Uint8Array, extensions: any): Promise<Array<Uint8Array>> {
-    // Handle `extensions` behavior
+//
+// This function is "trusted" since it performs the role of the hardware authenticator
+async function authenticatorGetAssertion(rpId: string, clientData: protocol.WebauthnClientData): Promise<Array<Uint8Array>> {
+    const clientDataJSON = JSON.stringify(clientData);
+    const challenge = await crypto_hash_sha256(clientDataJSON);
+
+    const extensions = clientData.clientExtensions;
+
+    // Handle `extensions` behavior for 'txAuthSimple'
     if (extensions && extensions.hasOwnProperty('txAuthSimple')) {
         const c = await client;
 
@@ -345,7 +354,8 @@ async function authenticatorGetAssertion(rpId: string, challenge: Uint8Array, ex
             userResponse = false;
         };
 
-        // TODO: Have callback functions which block until a response comes back
+        // TODO: Have an ID returned such that the popupReq can be dequeued if
+        // the request times out below
         c.enqueuePopupRequest(popupReq);
 
         // Issue the error handler to reject after no response from the user for 30 seconds
@@ -456,32 +466,18 @@ async function handle_webauthn_sign(msg: any, sender: chrome.runtime.MessageSend
         throw new Error('Krypton not registered with this key handle');
     }
 
-    const clientData = JSON.stringify({
+    const clientData: protocol.WebauthnClientData = {
         challenge: await to_base64_url_nopad(pkOptions.challenge),
         clientExtensions: pkOptions.extensions,
         hashAlgorithm: 'SHA-256',
-        origin,
+        origin: origin,
         type: 'webauthn.get',
-    });
-    const clientDataB64 = await to_base64_url_nopad(clientData);
+    };
+    const clientDataJSON = JSON.stringify(clientData);
+    const clientDataB64 = await to_base64_url_nopad(clientDataJSON);
 
-    const challenge = await crypto_hash_sha256(clientData);
-
-    // const response: protocol.Response = await c.signU2f({
-    //     app_id: matchingAppId,
-    //     challenge,
-    //     key_handle: keyHandle,
-    // });
-    // if (!response.u2f_authenticate_response) {
-    //     throw new Error('no u2f_authenticate_response');
-    // }
-    // if (response.u2f_authenticate_response.error) {
-    //     throw response.u2f_authenticate_response.error;
-    // }
-
-    // const u2fSignResponse = response.u2f_authenticate_response;
-
-    const [signature, authenticatorData] = await authenticatorGetAssertion(matchingAppId, challenge, pkOptions.extensions);
+    // Get the authentication assertion
+    const [signature, authenticatorData] = await authenticatorGetAssertion(matchingAppId, clientData);
 
     const credential: PublicKeyCredential = {
         id: await to_base64_url_nopad(keyHandle),
