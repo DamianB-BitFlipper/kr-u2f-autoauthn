@@ -30,12 +30,21 @@ export class Message {
         m.toast = t;
         return m;
     }
+
+    public static newUserAction(ua: UserAction): Message {
+        const m = new Message();
+        m.userAction = ua;
+        return m;
+    }
+
     @Type(() => Request)
     public request?: Request;
     @Type(() => Response)
     public response?: Response;
     @Type(() => Toast)
     public toast?: Toast;
+    @Type(() => UserAction)
+    public userAction?: UserAction;
 }
 
 export class Request {
@@ -57,4 +66,9 @@ export class Toast {
     public error?: string;
     public success?: string;
     public pending?: string;
+}
+
+export class UserAction {
+    public displayText: string;
+    public buttons: string[];
 }

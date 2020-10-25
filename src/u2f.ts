@@ -1,4 +1,4 @@
-import EnclaveClient from './enclave_client';
+import { EnclaveClient } from './enclave_client';
 import { Pairing } from './krpairing';
 import { U2FAuthenticateResponse, U2FRegisterResponse } from './protocol';
 

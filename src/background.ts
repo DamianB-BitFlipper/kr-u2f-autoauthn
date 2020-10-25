@@ -1,17 +1,17 @@
 import * as CBOR from 'cbor';
 
 import { Browser, browser as detectBrowser } from './browser';
-import {crypto_hash_sha256, from_base64_url_nopad, to_base64_url_nopad, signature_to_ASN1} from './crypto';
-import EnclaveClient from './enclave_client';
-import {RequestTypes, ResponseTypes} from './enums';
+import { crypto_hash_sha256, from_base64_url_nopad, to_base64_url_nopad, signature_to_ASN1 } from './crypto';
+import { EnclaveClient, PopupRequest } from './enclave_client';
+import { RequestTypes, ResponseTypes } from './enums';
 import { parse, stringify, webauthnParse, webauthnStringify } from './krjson';
-import { Message, RequestType, Toast } from './messages';
-import { BAD_APPID, checkIsRegistrableDomainSuffix, fetchAppIdUrl, verifyU2fAppId} from './origin-checker';
+import { Message, RequestType, Toast, UserAction } from './messages';
+import { BAD_APPID, checkIsRegistrableDomainSuffix, fetchAppIdUrl, verifyU2fAppId } from './origin-checker';
 import * as protocol from './protocol';
 import { addPresenceAndCounter, client, makeRegisterData } from './u2f';
-import {getDomainFromOrigin, getOriginFromUrl} from './url';
-import {createAuthenticatorDataWithAttestation, createAuthenticatorDataWithoutAttestation} from './webauthn';
-import {get, set} from './storage';
+import { getDomainFromOrigin, getOriginFromUrl } from './url';
+import { createAuthenticatorDataWithAttestation, createAuthenticatorDataWithoutAttestation } from './webauthn';
+import { get, set } from './storage';
 
 async function onRequest(msg, sender) {
     if (msg.type) {
@@ -23,7 +23,7 @@ async function onRequest(msg, sender) {
         } else if (msg.type === RequestTypes.REGISTER_WEBAUTHN) {
             const sendResponse = getResponseSender(ResponseTypes.REGISTER_WEBAUTHN, msg.requestId, sender);
             handle_webauthn_register(msg, sender).then(sendResponse)
-                                                 .catch(console.error);
+                                                 .catch((e) => { console.error(e); sendResponse({ errorCode: -1 }); });
             return;
         } else if (msg.type === RequestTypes.SIGN_U2F) {
             const sendResponse = getResponseSender(ResponseTypes.SIGN_U2F, msg.requestId, sender);
@@ -33,7 +33,7 @@ async function onRequest(msg, sender) {
         } else if (msg.type === RequestTypes.SIGN_WEBAUTHN) {
             const sendResponse = getResponseSender(ResponseTypes.SIGN_WEBAUTHN, msg.requestId, sender);
             handle_webauthn_sign(msg, sender).then(sendResponse)
-                                            .catch(console.error);
+                                            .catch((e) => { console.error(e); sendResponse({ errorCode: -1 }); });
             return;
         }
     }
@@ -168,32 +168,15 @@ async function handle_webauthn_register(msg: any,
 
     const challenge = await crypto_hash_sha256(clientData);
 
-    // ADDED
-    // const response = await c.enrollU2f({
-    //     app_id: rpId,
-    //     challenge,
-    // });
-    // if (!response.u2f_register_response) {
-    //     throw new Error('no u2f_register_response');
-    // }
-    // if (response.u2f_register_response.error) {
-    //     throw response.u2f_register_response.error;
-    // }
     //
-    // const u2fRegisterResponse = response.u2f_register_response;
-
-
-
     // TODO: Move this to an enrollU2f-like function
+    //
 
     // Extract the x/y-coords of this elliptic curve public key
     const public_key_json = await get('my_pubkey');
     const public_key_encoded = JSON.parse(public_key_json);
     const pk_x = await from_base64_url_nopad(public_key_encoded.x);
     const pk_y = await from_base64_url_nopad(public_key_encoded.y);
-
-    // ADDED
-    // console.warn("pk_x: " + pk_x + " pk_y: " + pk_y);
 
     // Create a valid `key_handle`
     const key_handle = await c.create_key_handle(rpId);
@@ -207,8 +190,9 @@ async function handle_webauthn_register(msg: any,
         error: '',
     };
 
+    //
     // TODO: Move this to an enrollU2f-like function
-
+    //
 
     const authenticatorData = await createAuthenticatorDataWithAttestation(rpId,
                                                                            u2fRegisterResponse.counter,
@@ -325,6 +309,114 @@ async function handle_u2f_register(msg: any, sender: chrome.runtime.MessageSende
     return authenticatedResponseData;
 }
 
+// TODO: Move function to more appropriate place, like enclave_client.ts
+async function authenticatorGetAssertion(rpId: string, challenge: Uint8Array, extensions: any): Promise<Array<Uint8Array>> {
+    // Handle `extensions` behavior
+    if (extensions && extensions.hasOwnProperty('txAuthSimple')) {
+        const c = await client;
+
+        // Print the transaction authorization text
+        console.log("Authentication message: " + extensions.txAuthSimple);
+
+        let userResponse: boolean | undefined = undefined;
+        function __delay__(ms: number) {
+            return new Promise( resolve => setTimeout(resolve, ms) );
+        }
+
+        async function waitForUser(){
+            while (userResponse === undefined) {
+                // Wait 50 milliseconds then retry
+                await __delay__(50);
+            }
+        }
+
+        const userAction = new UserAction();
+        userAction.displayText = extensions.txAuthSimple;
+
+        const popupReq = new PopupRequest();
+        popupReq.msg = Message.newUserAction(userAction);
+        popupReq.responseHandler = (resp: any) => {
+            userResponse = resp.response;
+        };
+        popupReq.errorHandler = (error?: any) => {
+            if (error != undefined) {
+                console.error("PopupRequest errorHandler: " + error);
+            }
+            userResponse = false;
+        };
+
+        // TODO: Have callback functions which block until a response comes back
+        c.enqueuePopupRequest(popupReq);
+
+        // Issue the error handler to reject after no response from the user for 30 seconds
+        const errorTimeout = setTimeout(popupReq.errorHandler, 30 * 1000);
+
+        // Wait for the user's response
+        await waitForUser();
+
+        // Clear the timeout after the user responded or timeout fired
+        clearTimeout(errorTimeout);
+
+        // ADDED
+        console.warn("Value of userResponse: " + userResponse);
+        if (!userResponse) {
+            throw new Error('User declined transaction authentication.');
+        }
+    }
+
+    // Extract the x/y-coords of this elliptic curve public key
+    const public_key_json = await get('my_pubkey');
+    const public_key_encoded = JSON.parse(public_key_json);
+    const pk_x = await from_base64_url_nopad(public_key_encoded.x);
+    const pk_y = await from_base64_url_nopad(public_key_encoded.y);
+
+    const u2fSignResponse: protocol.U2FAuthenticateResponse = {
+        counter: 420,
+        signature: null, // To be filled in later
+        public_key: new Uint8Array([...pk_x, ...pk_y]),
+        error: '',
+    };
+
+    // TODO: Does the server ever check that it's challenge is the one being responded
+    // and signed by the authenticator. 
+    //
+    // Also the clientData should make its way to the authenticator some how in order to
+    // display the txAuthnSimple text
+
+    const authenticatorData = await createAuthenticatorDataWithoutAttestation(rpId, u2fSignResponse.counter);
+
+    const to_sign_data = new Uint8Array(authenticatorData.byteLength + 32);
+    to_sign_data.set(authenticatorData, 0);
+    to_sign_data.set(challenge, authenticatorData.byteLength);
+
+    // Extract the private key as a `CryptoKey` object
+    const private_key_json = await get('my_privkey');
+    const private_key_encoded = JSON.parse(private_key_json);
+
+    const private_key = await window.crypto.subtle.importKey(
+        'jwk', 
+        private_key_encoded, 
+        {
+            name: "ECDSA",
+            namedCurve: "P-256",
+        },
+        false,
+        ["sign"],
+    );
+    
+    // Perform the authentication signing
+    const signature = await window.crypto.subtle.sign(
+        {
+            name: "ECDSA",
+            hash: {name: "SHA-256"},
+        },
+        private_key,
+        to_sign_data.buffer,
+    )
+
+    return Promise.resolve([new Uint8Array(signature), authenticatorData]);
+}
+
 async function handle_webauthn_sign(msg: any, sender: chrome.runtime.MessageSender) {
     const c = await client;
     const fetcher = getFetcher(sender);
@@ -389,61 +481,7 @@ async function handle_webauthn_sign(msg: any, sender: chrome.runtime.MessageSend
 
     // const u2fSignResponse = response.u2f_authenticate_response;
 
-    // Extract the x/y-coords of this elliptic curve public key
-    const public_key_json = await get('my_pubkey');
-    const public_key_encoded = JSON.parse(public_key_json);
-    const pk_x = await from_base64_url_nopad(public_key_encoded.x);
-    const pk_y = await from_base64_url_nopad(public_key_encoded.y);
-
-    const u2fSignResponse: protocol.U2FAuthenticateResponse = {
-        counter: 420,
-        signature: null, // To be filled in later
-        public_key: new Uint8Array([...pk_x, ...pk_y]),
-        error: '',
-    };
-
-    // ADDED
-    //console.warn("pk_x: " + pk_x + " pk_y: " + pk_y);
-
-    const authenticatorData = await createAuthenticatorDataWithoutAttestation(matchingAppId, u2fSignResponse.counter);
-
-    const to_sign_data = new Uint8Array(authenticatorData.byteLength + 32);
-    to_sign_data.set(authenticatorData, 0);
-    to_sign_data.set(challenge, authenticatorData.byteLength);
-
-    // ADDED
-    // console.warn("TO SIGN DATA: " + to_sign_data);
-
-    // Extract the private key as a `CryptoKey` object
-    const private_key_json = await get('my_privkey');
-    const private_key_encoded = JSON.parse(private_key_json);
-
-    // ADDED
-    //console.warn("Private key: " + await from_base64_url_nopad(private_key_encoded.d));
-
-    const private_key = await window.crypto.subtle.importKey(
-        'jwk', 
-        private_key_encoded, 
-        {
-            name: "ECDSA",
-            namedCurve: "P-256",
-        },
-        false,
-        ["sign"],
-    );
-    
-    // Perform the authentication signing
-    const signature = await window.crypto.subtle.sign(
-        {
-            name: "ECDSA",
-            hash: {name: "SHA-256"},
-        },
-        private_key,
-        to_sign_data.buffer,
-    )
-
-    // ADDED
-    // console.warn("SIGNATURE: " + await signature_to_ASN1(new Uint8Array(signature)));
+    const [signature, authenticatorData] = await authenticatorGetAssertion(matchingAppId, challenge, pkOptions.extensions);
 
     const credential: PublicKeyCredential = {
         id: await to_base64_url_nopad(keyHandle),
@@ -451,7 +489,7 @@ async function handle_webauthn_sign(msg: any, sender: chrome.runtime.MessageSend
         response: {
             authenticatorData: authenticatorData.buffer,
             clientDataJSON: (await from_base64_url_nopad(clientDataB64)).buffer,
-            signature: (await signature_to_ASN1(new Uint8Array(signature))).buffer,
+            signature: (await signature_to_ASN1(signature)).buffer,
             userHandle: new ArrayBuffer(0),
         },
         type: 'public-key',
@@ -547,7 +585,7 @@ function sendStates(c: EnclaveClient) {
     sendFullStateToPopup(c);
 }
 
-function sendToPopup(o: any) {
+function sendToPopup(o: any, responseHandler?: (resp: any) => void, errorHandler?: (error: any) => void) {
     switch (detectBrowser()) {
         case Browser.safari:
             const sendFn = (safari.extension.globalPage.contentWindow as any).krSendToPopup;
@@ -556,13 +594,25 @@ function sendToPopup(o: any) {
             }
             break;
         default:
-            chrome.runtime.sendMessage(stringify(o));
+            const sending = browser.runtime.sendMessage(stringify(o));
+
+            if (responseHandler != undefined || errorHandler !== undefined) {
+                sending.then(responseHandler, errorHandler);
+            }
     }
 }
 
 function sendFullStateToPopup(c: EnclaveClient) {
     const r = c.getState();
     sendToPopup(r);
+
+    // TODO: Should include code for callback if required by popup request
+    //
+    // Send over all of the 
+    var popupReq: PopupRequest;
+    while (popupReq = c.pendingPopupRequests.pop()) {
+        sendToPopup(popupReq.msg, popupReq.responseHandler, popupReq.errorHandler);
+    }
 }
 
 function sendPending(s: string) {

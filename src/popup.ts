@@ -8,6 +8,9 @@ $(document).ready(async () => {
 
     $('.extension-version').text(chrome.runtime.getManifest().version);
     const pair = document.getElementById('pairScreen');
+    const userActionBoard = document.getElementById('userActionBoard');
+
+    userActionBoard.classList.add('remove');
 
     onPopupOpen();
     pollState();
@@ -47,6 +50,7 @@ chrome.runtime.onMessage.addListener(async (msg, sender) => {
     const launch = document.getElementById('launch');
     const pair = document.getElementById('pairScreen');
     const accounts = document.getElementById('accounts');
+    const userActionBoard = document.getElementById('userActionBoard');
 
     const m = await parse(Message, msg);
 
@@ -91,5 +95,17 @@ chrome.runtime.onMessage.addListener(async (msg, sender) => {
         if (r.phoneName) {
             $('.tokenName').text(r.phoneName);
         }
+    } else if (m.userAction) {
+        userActionBoard.classList.remove('remove');
+        $('#userActionMessage').text(m.userAction.displayText);
+
+        const hideActionBoard = () => {
+            userActionBoard.classList.add('remove');
+        };
+
+        return new Promise((resolve) => {
+            $('#yesButton').click(() => { hideActionBoard(); resolve({response: true}); });
+            $('#noButton').click(() => { hideActionBoard(); resolve({response: false}); });            
+        });
     }
 });

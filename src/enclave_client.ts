@@ -14,9 +14,16 @@ import {
         } from './protocol';
 import {get} from './storage';
 
-export default class EnclaveClient {
+export class PopupRequest {
+    public msg: Messages.Message;
+    public responseHandler?: (resp: any) => void;
+    public errorHandler?: (error: any) => void;
+}
+
+export class EnclaveClient {
     public pairing: Pairing;
     public pendingRequest: {[requestId: string]: Function} = {};
+    public pendingPopupRequests: Array<PopupRequest> = [];
 
     public onChange: Function;
 
@@ -69,6 +76,7 @@ export default class EnclaveClient {
     public async refreshPopup() {
         await Pairing.loadOrGenerate();
     }
+
 
     public async unpair(sendUnpairRequest: boolean) {
         if (sendUnpairRequest) {
@@ -219,6 +227,10 @@ export default class EnclaveClient {
 
     public async pollFor(ms: number) {
         return this.pairing.pollFor(ms, this.onMessage.bind(this));
+    }
+
+    public enqueuePopupRequest(popupReq: PopupRequest) {
+        this.pendingPopupRequests.push(popupReq);
     }
 
     public getState() {
