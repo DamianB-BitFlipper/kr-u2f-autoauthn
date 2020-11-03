@@ -180,12 +180,16 @@ async function handle_webauthn_register(msg: any,
     const pk_x = await from_base64_url_nopad(public_key_encoded.x);
     const pk_y = await from_base64_url_nopad(public_key_encoded.y);
 
+    // Extract the signature counter
+    const sign_count_json = await get('my_sign_count');
+    const sign_count = JSON.parse(sign_count_json);
+    
     // Create a valid `key_handle`
     const key_handle = await c.create_key_handle(rpId);
 
     const u2fRegisterResponse: protocol.U2FRegisterResponse = {
         public_key: new Uint8Array([...pk_x, ...pk_y]),
-        counter: 420,
+        counter: sign_count,
         signature: new Uint8Array([]), // Omit
         attestation_certificate: new Uint8Array([]), // Omit
         key_handle: key_handle,
@@ -367,7 +371,6 @@ async function authenticatorGetAssertion(rpId: string, clientData: protocol.Weba
         // Clear the timeout after the user responded or timeout fired
         clearTimeout(errorTimeout);
 
-        // ADDED
         console.warn("Value of userResponse: " + userResponse);
         if (!userResponse) {
             throw new Error('User declined transaction authentication.');
@@ -380,8 +383,16 @@ async function authenticatorGetAssertion(rpId: string, clientData: protocol.Weba
     const pk_x = await from_base64_url_nopad(public_key_encoded.x);
     const pk_y = await from_base64_url_nopad(public_key_encoded.y);
 
+    // Update the signature counter
+    const sign_count_json = await get('my_sign_count');
+    const sign_count = JSON.parse(sign_count_json);
+
+    const new_sign_count = sign_count + 1;
+    const new_sign_count_json = JSON.stringify(new_sign_count);
+    await set('my_sign_count', new_sign_count_json)
+    
     const u2fSignResponse: protocol.U2FAuthenticateResponse = {
-        counter: 420,
+        counter: new_sign_count,
         signature: null, // To be filled in later
         public_key: new Uint8Array([...pk_x, ...pk_y]),
         error: '',
@@ -747,6 +758,10 @@ async function initPubPrivKeys() {
 
     await set('my_pubkey', public_key_json);
     await set('my_privkey', private_key_json);
+    
+    // Store the signature counter
+    const sign_count_json = JSON.stringify(0);
+    await set('my_sign_count', sign_count_json);
 }
 
 switch (detectBrowser()) {

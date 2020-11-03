@@ -99,9 +99,6 @@ export async function signature_to_ASN1(signature: Uint8Array): Promise<Uint8Arr
     let rPre = true;
     let sPre = true;
 
-    // ADDED
-    // console.warn("R: " + r + " S: " + s);
-
     while(r[0] === 0x00) {
         r = r.slice(2);
         rPre = false;
