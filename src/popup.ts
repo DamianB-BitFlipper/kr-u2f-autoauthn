@@ -2,15 +2,22 @@ import $ from 'jquery';
 
 import { equals } from './crypto';
 import { parse, stringify } from './krjson';
-import { Message, Request, RequestType } from './messages';
+import { Message, Request, RequestType, UserActionType } from './messages';
 
 $(document).ready(async () => {
 
     $('.extension-version').text(chrome.runtime.getManifest().version);
     const pair = document.getElementById('pairScreen');
+
     const userActionBoard = document.getElementById('userActionBoard');
+    const yesButton = document.getElementById('ua_yesButton');
+    const noButton = document.getElementById('ua_noButton');
+    const textFieldForm = document.getElementById('ua_textFieldForm');
 
     userActionBoard.classList.add('remove');
+    yesButton.classList.add('remove');
+    noButton.classList.add('remove');
+    textFieldForm.classList.add('remove');
 
     onPopupOpen();
     pollState();
@@ -50,7 +57,6 @@ chrome.runtime.onMessage.addListener(async (msg, sender) => {
     const launch = document.getElementById('launch');
     const pair = document.getElementById('pairScreen');
     const accounts = document.getElementById('accounts');
-    const userActionBoard = document.getElementById('userActionBoard');
 
     const m = await parse(Message, msg);
 
@@ -96,16 +102,47 @@ chrome.runtime.onMessage.addListener(async (msg, sender) => {
             $('.tokenName').text(r.phoneName);
         }
     } else if (m.userAction) {
+        const userActionBoard = document.getElementById('userActionBoard');
+        const yesButton = document.getElementById('ua_yesButton');
+        const noButton = document.getElementById('ua_noButton');
+        const textFieldForm = document.getElementById('ua_textFieldForm');
+
         userActionBoard.classList.remove('remove');
+
         $('#userActionMessage').text(m.userAction.displayText);
 
         const hideActionBoard = () => {
+            // Hide everything
             userActionBoard.classList.add('remove');
+            yesButton.classList.add('remove');
+            noButton.classList.add('remove');
+            textFieldForm.classList.add('remove');
         };
 
-        return new Promise((resolve) => {
-            $('#yesButton').click(() => { hideActionBoard(); resolve({response: true}); });
-            $('#noButton').click(() => { hideActionBoard(); resolve({response: false}); });            
-        });
+        var ret: Promise<any>;
+        switch (m.userAction.actionType) {
+                case UserActionType.yes_no: {
+                    // Show the buttons
+                    yesButton.classList.remove('remove');
+                    noButton.classList.remove('remove');
+
+                    ret = new Promise((resolve) => {
+                        $('#ua_yesButton').click(() => { hideActionBoard(); resolve({response: true}); });
+                        $('#ua_noButton').click(() => { hideActionBoard(); resolve({response: false}); });            
+                    });
+                    break;
+                }
+                case UserActionType.text_field: {
+                    // Show the text field
+                    textFieldForm.classList.remove('remove');
+                    ret = new Promise((resolve) => {
+                        $('#ua_textFieldSubmit').click(() => { hideActionBoard(); 
+                                                               resolve({response: (<HTMLInputElement>document.getElementById('ua_textField')).value}); });
+                    });
+                    break;
+                }
+        }
+
+        return ret;
     }
 });

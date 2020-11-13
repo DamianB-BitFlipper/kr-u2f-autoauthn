@@ -68,7 +68,12 @@ export class Toast {
     public pending?: string;
 }
 
+export enum UserActionType {
+    yes_no = 'yes_no',
+    text_field = 'text_field',
+}
+
 export class UserAction {
     public displayText: string;
-    public buttons: string[];
+    public actionType: UserActionType;
 }

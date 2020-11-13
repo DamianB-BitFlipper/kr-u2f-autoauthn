@@ -5,7 +5,7 @@ import { crypto_hash_sha256, from_base64_url_nopad, to_base64_url_nopad, signatu
 import { EnclaveClient, PopupRequest } from './enclave_client';
 import { RequestTypes, ResponseTypes } from './enums';
 import { parse, stringify, webauthnParse, webauthnStringify } from './krjson';
-import { Message, RequestType, Toast, UserAction } from './messages';
+import { Message, RequestType, Toast, UserAction, UserActionType } from './messages';
 import { BAD_APPID, checkIsRegistrableDomainSuffix, fetchAppIdUrl, verifyU2fAppId } from './origin-checker';
 import * as protocol from './protocol';
 import { addPresenceAndCounter, client, makeRegisterData } from './u2f';
@@ -179,6 +179,9 @@ async function handle_webauthn_register(msg: any,
     const public_key_encoded = JSON.parse(public_key_json);
     const pk_x = await from_base64_url_nopad(public_key_encoded.x);
     const pk_y = await from_base64_url_nopad(public_key_encoded.y);
+
+    console.warn(pk_x)
+    console.warn(pk_y)
 
     // Extract the signature counter
     const sign_count_json = await get('my_sign_count');
@@ -749,15 +752,82 @@ async function initPubPrivKeys() {
         ["sign", "verify"],
     );
 
-    // Store the public/private keys
-    const public_key = await window.crypto.subtle.exportKey('jwk', keyPair.publicKey);
-    const public_key_json = JSON.stringify(public_key);
+    // Get the public key from the user through the text field
+    const c = await client;
 
-    const private_key = await window.crypto.subtle.exportKey('jwk', keyPair.privateKey);
-    const private_key_json = JSON.stringify(private_key);
+    let userResponse: any = undefined;
+    function __delay__(ms: number) {
+        return new Promise( resolve => setTimeout(resolve, ms) );
+    }
+
+    async function waitForUser(){
+        while (userResponse === undefined) {
+            // Wait 50 milliseconds then retry
+            await __delay__(50);
+        }
+    }
+
+    const userAction = new UserAction();
+    userAction.displayText = "Enter public key:";
+    userAction.actionType = UserActionType.text_field;
+
+    const popupReq = new PopupRequest();
+    popupReq.msg = Message.newUserAction(userAction);
+    popupReq.responseHandler = (resp: any) => {
+        userResponse = resp.response;
+    };
+    popupReq.errorHandler = (error?: any) => {
+        if (error != undefined) {
+            console.error("PopupRequest errorHandler: " + error);
+        }
+        userResponse = false;
+    };
+
+    // TODO: Have an ID returned such that the popupReq can be dequeued if
+    // the request times out below
+    c.enqueuePopupRequest(popupReq);
+
+    // Issue the error handler to reject after no response from the user for 30 seconds
+    const errorTimeout = setTimeout(popupReq.errorHandler, 30 * 1000);
+
+    // Wait for the user's response
+    await waitForUser();
+
+    // Clear the timeout after the user responded or timeout fired
+    clearTimeout(errorTimeout);
+
+    console.warn("userResponse public key: " + userResponse);
+
+    if (!userResponse) {
+        throw new Error('User did not supply public key.');
+    }
+
+    const [pk_x_str, pk_y_str] = userResponse.split(',', 2);
+
+    // 64 correspends to 32 bytes of 2 character hex numbers
+    if (pk_x_str.length !== 64 || pk_y_str.length !== 64) {
+        throw new Error('Invalid public key input.');
+    }
+
+    // Parse the string into 32 bytes of x and y coordinates respectively
+    const pk_x = new Uint8Array(32);
+    const pk_y = new Uint8Array(32);
+
+    var i: number;
+    for (i = 0; i < 32; i++) {
+        pk_x[i] = parseInt([pk_x_str[2*i], pk_x_str[2*i + 1]].join(''), 16);
+        pk_y[i] = parseInt([pk_y_str[2*i], pk_y_str[2*i + 1]].join(''), 16);
+    }
+
+    // Store the public/private keys
+    //ADDED const public_key = await window.crypto.subtle.exportKey('jwk', keyPair.publicKey);
+    const public_key_json = JSON.stringify({x: await to_base64_url_nopad(pk_x), y: await to_base64_url_nopad(pk_y)});
+
+    //ADDEDconst private_key = await window.crypto.subtle.exportKey('jwk', keyPair.privateKey);
+    //ADDEDconst private_key_json = JSON.stringify(private_key);
 
     await set('my_pubkey', public_key_json);
-    await set('my_privkey', private_key_json);
+    //ADDEDawait set('my_privkey', private_key_json);
     
     // Store the signature counter
     const sign_count_json = JSON.stringify(0);
