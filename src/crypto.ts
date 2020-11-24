@@ -122,3 +122,24 @@ export async function signature_to_ASN1(signature: Uint8Array): Promise<Uint8Arr
 
     return der;
 }
+
+export async function hex_comma_separated_to_ECC256_coords(hexCommaInput: string): Promise<Array<Uint8Array>> {
+    const [x_str, y_str] = hexCommaInput.split(',', 2);
+
+    // 64 correspends to 32 bytes of 2 character hex numbers
+    if (!x_str || !y_str || x_str.length !== 64 || y_str.length !== 64) {
+        throw new Error('Invalid ECC256 coordinate input.');
+    }
+
+    // Parse the string into 32 bytes of x and y coordinates respectively
+    const x = new Uint8Array(32);
+    const y = new Uint8Array(32);
+
+    var i: number;
+    for (i = 0; i < 32; i++) {
+        x[i] = parseInt([x_str[2*i], x_str[2*i + 1]].join(''), 16);
+        y[i] = parseInt([y_str[2*i], y_str[2*i + 1]].join(''), 16);
+    }
+    
+    return Promise.resolve([x, y]);
+}

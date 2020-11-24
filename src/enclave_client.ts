@@ -229,8 +229,50 @@ export class EnclaveClient {
         return this.pairing.pollFor(ms, this.onMessage.bind(this));
     }
 
-    public enqueuePopupRequest(popupReq: PopupRequest) {
+    // TODO make this private function
+    private enqueuePopupRequest(popupReq: PopupRequest) {
         this.pendingPopupRequests.push(popupReq);
+    }
+
+    public async executeUserActionRequest(userAction: Messages.UserAction): Promise<any> {
+        let userResponse: any = undefined;
+        function __delay__(ms: number) {
+            return new Promise( resolve => setTimeout(resolve, ms) );
+        }
+
+        async function waitForUser(){
+            while (userResponse === undefined) {
+                // Wait 50 milliseconds then retry
+                await __delay__(50);
+            }
+        }
+
+        const popupReq = new PopupRequest();
+        popupReq.msg = Messages.Message.newUserAction(userAction);
+        popupReq.responseHandler = (resp: any) => {
+            userResponse = resp.response;
+        };
+        popupReq.errorHandler = (error?: any) => {
+            if (error != undefined) {
+                console.error("PopupRequest errorHandler: " + error);
+            }
+            userResponse = false;
+        };
+
+        // TODO: Have an ID returned such that the popupReq can be dequeued if
+        // the request times out below
+        this.enqueuePopupRequest(popupReq);
+
+        // Issue the error handler to reject after no response from the user for 30 seconds
+        const errorTimeout = setTimeout(popupReq.errorHandler, 30 * 1000);
+
+        // Wait for the user's response
+        await waitForUser();
+
+        // Clear the timeout after the user responded or timeout fired
+        clearTimeout(errorTimeout);
+
+        return Promise.resolve(userResponse);
     }
 
     public getState() {
