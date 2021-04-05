@@ -183,9 +183,11 @@ async function handle_webauthn_register(msg: any,
     // Extract the signature counter
     const sign_count_json = await get('my_sign_count');
     const sign_count = JSON.parse(sign_count_json);
-    
+
     // Create a valid `key_handle`
-    const key_handle = await c.create_key_handle(rpId);
+    // ADDED const key_handle = await c.create_key_handle(rpId);
+    // ADDED This is a key handle for deterministic key generation
+    const key_handle = new Uint8Array([44, 229, 200, 223, 23, 226, 46, 242, 15, 211, 131, 3, 253, 45, 153, 152, 189, 69, 78, 90, 167, 8, 236, 12, 129, 12, 1, 13, 84, 3, 66, 115, 85, 3, 34, 220, 119, 214, 26, 235, 132, 81, 225, 45, 9, 227, 208, 179, 32, 176, 24, 201, 44, 182, 52, 80, 0, 173, 75, 220, 192, 112, 254, 101, 83, 234, 79, 173, 107, 145, 97, 18, 168, 230, 129, 214, 97, 70, 173, 215]);
 
     const u2fRegisterResponse: protocol.U2FRegisterResponse = {
         public_key: new Uint8Array([...pk_x, ...pk_y]),
@@ -318,18 +320,20 @@ async function handle_u2f_register(msg: any, sender: chrome.runtime.MessageSende
 // TODO: Move function to more appropriate place, like enclave_client.ts
 //
 // This function is "trusted" since it performs the role of the hardware authenticator
-async function authenticatorGetAssertion(rpId: string, clientData: protocol.WebauthnClientData): Promise<Array<Uint8Array>> {
+async function authenticatorGetAssertion(rpId: string, clientData: protocol.WebauthnClientData): Promise<Uint8Array[]> {
     const clientDataJSON = JSON.stringify(clientData);
     const challenge = await crypto_hash_sha256(clientDataJSON);
 
     const extensions = clientData.clientExtensions;
 
+    // TODO: What should be done on unrecognized extension? ignore or error?
+    //
     // Handle `extensions` behavior for 'txAuthSimple'
     if (extensions && extensions.hasOwnProperty('txAuthSimple')) {
         const c = await client;
 
         // Print the transaction authorization text
-        console.log("Authentication message: " + extensions.txAuthSimple);
+        console.warn('Authentication message: ' + extensions.txAuthSimple);
 
         let userResponse: boolean | undefined = undefined;
         function __delay__(ms: number) {
@@ -353,7 +357,7 @@ async function authenticatorGetAssertion(rpId: string, clientData: protocol.Weba
         };
         popupReq.errorHandler = (error?: any) => {
             if (error != undefined) {
-                console.error("PopupRequest errorHandler: " + error);
+                console.error('PopupRequest errorHandler: ' + error);
             }
             userResponse = false;
         };
@@ -371,7 +375,7 @@ async function authenticatorGetAssertion(rpId: string, clientData: protocol.Weba
         // Clear the timeout after the user responded or timeout fired
         clearTimeout(errorTimeout);
 
-        console.warn("Value of userResponse: " + userResponse);
+        console.warn('Value of userResponse: ' + userResponse);
         if (!userResponse) {
             throw new Error('User declined transaction authentication.');
         }
@@ -389,20 +393,14 @@ async function authenticatorGetAssertion(rpId: string, clientData: protocol.Weba
 
     const new_sign_count = sign_count + 1;
     const new_sign_count_json = JSON.stringify(new_sign_count);
-    await set('my_sign_count', new_sign_count_json)
-    
+    await set('my_sign_count', new_sign_count_json);
+
     const u2fSignResponse: protocol.U2FAuthenticateResponse = {
         counter: new_sign_count,
         signature: null, // To be filled in later
         public_key: new Uint8Array([...pk_x, ...pk_y]),
         error: '',
     };
-
-    // TODO: Does the server ever check that it's challenge is the one being responded
-    // and signed by the authenticator. 
-    //
-    // Also the clientData should make its way to the authenticator some how in order to
-    // display the txAuthnSimple text
 
     const authenticatorData = await createAuthenticatorDataWithoutAttestation(rpId, u2fSignResponse.counter);
 
@@ -415,25 +413,25 @@ async function authenticatorGetAssertion(rpId: string, clientData: protocol.Weba
     const private_key_encoded = JSON.parse(private_key_json);
 
     const private_key = await window.crypto.subtle.importKey(
-        'jwk', 
-        private_key_encoded, 
+        'jwk',
+        private_key_encoded,
         {
-            name: "ECDSA",
-            namedCurve: "P-256",
+            name: 'ECDSA',
+            namedCurve: 'P-256',
         },
         false,
-        ["sign"],
+        ['sign'],
     );
-    
+
     // Perform the authentication signing
     const signature = await window.crypto.subtle.sign(
         {
-            name: "ECDSA",
-            hash: {name: "SHA-256"},
+            name: 'ECDSA',
+            hash: {name: 'SHA-256'},
         },
         private_key,
         to_sign_data.buffer,
-    )
+    );
 
     return Promise.resolve([new Uint8Array(signature), authenticatorData]);
 }
@@ -477,6 +475,8 @@ async function handle_webauthn_sign(msg: any, sender: chrome.runtime.MessageSend
         throw new Error('Krypton not registered with this key handle');
     }
 
+    console.warn('pkOptions.extensions: ', pkOptions.extensions);
+
     const clientData: protocol.WebauthnClientData = {
         challenge: await to_base64_url_nopad(pkOptions.challenge),
         clientExtensions: pkOptions.extensions,
@@ -484,6 +484,7 @@ async function handle_webauthn_sign(msg: any, sender: chrome.runtime.MessageSend
         origin: origin,
         type: 'webauthn.get',
     };
+
     const clientDataJSON = JSON.stringify(clientData);
     const clientDataB64 = await to_base64_url_nopad(clientDataJSON);
 
@@ -613,9 +614,7 @@ function sendFullStateToPopup(c: EnclaveClient) {
     const r = c.getState();
     sendToPopup(r);
 
-    // TODO: Should include code for callback if required by popup request
-    //
-    // Send over all of the 
+    // Send over all of the popup requests
     var popupReq: PopupRequest;
     while (popupReq = c.pendingPopupRequests.pop()) {
         sendToPopup(popupReq.msg, popupReq.responseHandler, popupReq.errorHandler);
@@ -738,15 +737,16 @@ declare var Components;
 
 // Create the local public-private keys
 async function initPubPrivKeys() {
-    console.info("Creating ECDSA public/private keys");
+    console.info('Creating ECDSA public/private keys');
 
+    /* Used to generate new public/private keys
     const keyPair = await window.crypto.subtle.generateKey(
         {
-            name: "ECDSA",
-            namedCurve: "P-256",
+            name: 'ECDSA',
+            namedCurve: 'P-256',
         },
         true,
-        ["sign", "verify"],
+        ['sign', 'verify'],
     );
 
     // Store the public/private keys
@@ -758,7 +758,13 @@ async function initPubPrivKeys() {
 
     await set('my_pubkey', public_key_json);
     await set('my_privkey', private_key_json);
-    
+    */
+
+    // ADDED This is for deterministic key generation
+    // Set the public/private keys deterministically
+    await set('my_pubkey', '{"crv":"P-256","ext":true,"key_ops":["verify"],"kty":"EC","x":"KcNO0p_qaMgb-ataqGGRTfB0_9qaBHryTt62skJzrRA","y":"umamfga7YpXmsdwx-NxAv3WF_qZKZc2o_SrA1lqFY5k"}');
+    await set('my_privkey', '{"crv":"P-256","d":"3lZBonO6AZDpfTyOViPPj5hqWqHocbZPGVJGHECEKn0","ext":true,"key_ops":["sign"],"kty":"EC","x":"KcNO0p_qaMgb-ataqGGRTfB0_9qaBHryTt62skJzrRA","y":"umamfga7YpXmsdwx-NxAv3WF_qZKZc2o_SrA1lqFY5k"}');
+
     // Store the signature counter
     const sign_count_json = JSON.stringify(0);
     await set('my_sign_count', sign_count_json);
